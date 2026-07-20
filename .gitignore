@@ -1,5 +1,6 @@
 data/
 .env
+llama-cpp-router-monitor
 
 # Go
 bin/

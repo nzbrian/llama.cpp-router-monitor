@@ -40,6 +40,7 @@ const el = {
   drawerClose: document.getElementById("drawerClose"),
   rawReq: document.getElementById("rawRequest"),
   structuredResp: document.getElementById("structuredResponse"),
+  parsedResp: document.getElementById("parsedResponse"),
   rawResp: document.getElementById("rawResponse"),
   detailStatus: document.getElementById("detailStatus"),
   detailTtft: document.getElementById("detailTtft"),
@@ -324,6 +325,75 @@ function buildStructuredResponseView(raw, rec) {
     timings,
     chunks,
   }, null, 2);
+}
+
+function buildParsedResponseView(raw, rec) {
+  if (!raw || /^response payload unavailable/i.test(raw)) {
+    return raw || "response payload unavailable";
+  }
+
+  if (!rec?.is_streaming) {
+    try {
+      const parsed = JSON.parse(raw);
+      const parts = [];
+      if (parsed.reasoning_content && typeof parsed.reasoning_content === "string") {
+        parts.push(parsed.reasoning_content);
+      }
+      if (parsed.arguments && typeof parsed.arguments === "string") {
+        parts.push(parsed.arguments);
+      }
+      return parts.length ? parts.join("\n\n") : raw;
+    } catch {
+      return raw;
+    }
+  }
+
+  const argumentsParts = [];
+  const reasoningParts = [];
+
+  for (const line of raw.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("data:")) {
+      continue;
+    }
+    const payload = trimmed.slice(5).trim();
+    if (!payload || payload === "[DONE]") {
+      continue;
+    }
+    try {
+      const chunk = JSON.parse(payload);
+      if (chunk.choices) {
+        const choices = Array.isArray(chunk.choices) ? chunk.choices : [];
+        for (const choice of choices) {
+          const delta = choice.delta || {};
+          if (delta.reasoning_content && typeof delta.reasoning_content === "string") {
+            reasoningParts.push(delta.reasoning_content);
+          }
+          if (delta.arguments && typeof delta.arguments === "string") {
+            argumentsParts.push(delta.arguments);
+          }
+        }
+      } else {
+        if (chunk.reasoning_content && typeof chunk.reasoning_content === "string") {
+          reasoningParts.push(chunk.reasoning_content);
+        }
+        if (chunk.arguments && typeof chunk.arguments === "string") {
+          argumentsParts.push(chunk.arguments);
+        }
+      }
+    } catch {
+      // skip unparsed chunks
+    }
+  }
+
+  const parts = [];
+  if (reasoningParts.length) {
+    parts.push(reasoningParts.join(""));
+  }
+  if (argumentsParts.length) {
+    parts.push(argumentsParts.join(""));
+  }
+  return parts.length ? parts.join("\n\n") : "";
 }
 
 function collectFilters() {
@@ -615,6 +685,7 @@ async function openDetails(id) {
   setToneClass(el.detailCacheHitPct.parentElement, "mini-stat-", cacheTone(rec.cache_hit_pct || 0).replace("tone-", ""));
   el.rawReq.textContent = "Loading request payload...";
   el.structuredResp.textContent = "Building structured response...";
+  el.parsedResp.textContent = "Parsing arguments...";
   el.rawResp.textContent = "Loading response payload...";
 
   const [rawReq, rawResp] = await Promise.all([
@@ -628,6 +699,7 @@ async function openDetails(id) {
 
   el.rawReq.textContent = rawReq;
   el.structuredResp.textContent = buildStructuredResponseView(rawResp, rec);
+  el.parsedResp.textContent = buildParsedResponseView(rawResp, rec);
   el.rawResp.textContent = rawResp;
 }
 
@@ -672,6 +744,7 @@ function clearDetails() {
   setToneClass(el.detailCacheHitPct.parentElement, "mini-stat-", "");
   el.rawReq.textContent = "No request selected.";
   el.structuredResp.textContent = "No request selected.";
+  el.parsedResp.textContent = "No request selected.";
   el.rawResp.textContent = "No request selected.";
   renderRequests(state.latestItems);
 }
@@ -701,6 +774,7 @@ function setupTabs() {
       const target = tab.dataset.tab;
       el.rawReq.classList.toggle("active", target === "request");
       el.structuredResp.classList.toggle("active", target === "structured");
+      el.parsedResp.classList.toggle("active", target === "parsed");
       el.rawResp.classList.toggle("active", target === "response");
     });
   }
