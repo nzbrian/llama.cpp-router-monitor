@@ -9,6 +9,7 @@ const state = {
   metricsMode: "cards",
   hasMore: false,
   loadingMore: false,
+  showContentInParsed: false,
 };
 
 const el = {
@@ -327,7 +328,7 @@ function buildStructuredResponseView(raw, rec) {
   }, null, 2);
 }
 
-function buildParsedResponseView(raw, rec) {
+function buildParsedResponseView(raw, rec, showContent = false) {
   if (!raw || /^response payload unavailable/i.test(raw)) {
     return raw || "response payload unavailable";
   }
@@ -342,6 +343,9 @@ function buildParsedResponseView(raw, rec) {
       if (parsed.arguments && typeof parsed.arguments === "string") {
         parts.push(parsed.arguments);
       }
+      if (showContent && parsed.content && typeof parsed.content === "string") {
+        parts.push(parsed.content);
+      }
       return parts.length ? parts.join("\n\n") : raw;
     } catch {
       return raw;
@@ -350,6 +354,7 @@ function buildParsedResponseView(raw, rec) {
 
   const argumentsParts = [];
   const reasoningParts = [];
+  const contentParts = [];
 
   for (const line of raw.split(/\r?\n/)) {
     const trimmed = line.trim();
@@ -372,6 +377,13 @@ function buildParsedResponseView(raw, rec) {
           if (delta.arguments && typeof delta.arguments === "string") {
             argumentsParts.push(delta.arguments);
           }
+          if (showContent) {
+            if (typeof delta.content === "string" && delta.content) {
+              contentParts.push(delta.content);
+            } else if (typeof choice.message?.content === "string" && choice.message.content) {
+              contentParts.push(choice.message.content);
+            }
+          }
         }
       } else {
         if (chunk.reasoning_content && typeof chunk.reasoning_content === "string") {
@@ -379,6 +391,13 @@ function buildParsedResponseView(raw, rec) {
         }
         if (chunk.arguments && typeof chunk.arguments === "string") {
           argumentsParts.push(chunk.arguments);
+        }
+        if (showContent) {
+          if (typeof chunk.content === "string" && chunk.content) {
+            contentParts.push(chunk.content);
+          } else if (typeof chunk.message?.content === "string" && chunk.message.content) {
+            contentParts.push(chunk.message.content);
+          }
         }
       }
     } catch {
@@ -392,6 +411,9 @@ function buildParsedResponseView(raw, rec) {
   }
   if (argumentsParts.length) {
     parts.push(argumentsParts.join(""));
+  }
+  if (showContent && contentParts.length) {
+    parts.push(contentParts.join(""));
   }
   return parts.length ? parts.join("\n\n") : "";
 }
@@ -699,7 +721,7 @@ async function openDetails(id) {
 
   el.rawReq.textContent = rawReq;
   el.structuredResp.textContent = buildStructuredResponseView(rawResp, rec);
-  el.parsedResp.textContent = buildParsedResponseView(rawResp, rec);
+  el.parsedResp.textContent = buildParsedResponseView(rawResp, rec, state.showContentInParsed);
   el.rawResp.textContent = rawResp;
 }
 
@@ -776,6 +798,12 @@ function setupTabs() {
       el.structuredResp.classList.toggle("active", target === "structured");
       el.parsedResp.classList.toggle("active", target === "parsed");
       el.rawResp.classList.toggle("active", target === "response");
+      
+      // Show/hide parsed toggle button based on active tab
+      const parsedToggle = document.querySelector(".parsed-toggle");
+      if (parsedToggle) {
+        parsedToggle.style.display = target === "parsed" ? "" : "none";
+      }
     });
   }
 }
@@ -856,6 +884,17 @@ function wireFilters() {
     });
   });
   el.drawerOverlay.addEventListener("click", clearDetails);
+
+  const parsedToggle = document.querySelector(".parsed-toggle");
+  if (parsedToggle) {
+    parsedToggle.addEventListener("click", () => {
+      state.showContentInParsed = !state.showContentInParsed;
+      parsedToggle.textContent = state.showContentInParsed ? "Hide content" : "Show content";
+      if (state.selectedId) {
+        openDetails(state.selectedId).catch(() => {});
+      }
+    });
+  }
 
   [el.fQuery, el.fPath, el.fModel, el.fStatus, el.fSince].forEach((node) => {
     node.addEventListener("keydown", async (event) => {
