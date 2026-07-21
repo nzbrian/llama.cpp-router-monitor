@@ -10,6 +10,7 @@ const state = {
   hasMore: false,
   loadingMore: false,
   showContentInParsed: false,
+  partialPollTimer: null,
 };
 
 const el = {
@@ -704,26 +705,84 @@ async function openDetails(id) {
   setToneClass(el.detailDecodeRate.parentElement, "mini-stat-", rateTone(rec.decode_tok_per_sec || 0).replace("tone-", ""));
   setToneClass(el.detailCacheHitPct.parentElement, "mini-stat-", cacheTone(rec.cache_hit_pct || 0).replace("tone-", ""));
   el.rawReq.textContent = "Loading request payload...";
-  el.structuredResp.textContent = "Building structured response...";
-  el.parsedResp.textContent = "Parsing arguments...";
-  el.rawResp.textContent = "Loading response payload...";
 
-  const [rawReq, rawResp] = await Promise.all([
-    fetchRaw(id, "request"),
-    fetchRaw(id, "response"),
-  ]);
+  if (isCompleted(rec)) {
+    el.structuredResp.textContent = "Building structured response...";
+    el.parsedResp.textContent = "Parsing arguments...";
+    el.rawResp.textContent = "Loading response payload...";
 
+    const [rawReq, rawResp] = await Promise.all([
+      fetchRaw(id, "request"),
+      fetchRaw(id, "response"),
+    ]);
+
+    if (state.selectedId !== id) {
+      return;
+    }
+
+    el.rawReq.textContent = rawReq;
+    el.structuredResp.textContent = buildStructuredResponseView(rawResp, rec);
+    el.parsedResp.textContent = buildParsedResponseView(rawResp, rec, state.showContentInParsed);
+    el.rawResp.textContent = rawResp;
+  } else if (rec.is_streaming) {
+    el.structuredResp.textContent = "Streaming response...";
+    el.parsedResp.textContent = "";
+    el.rawResp.textContent = "Waiting for first chunk...";
+    startPartialPoll(id);
+  }
+}
+
+async function pollPartialResponse(id) {
   if (state.selectedId !== id) {
+    stopPartialPoll();
     return;
   }
+  try {
+    const resp = await fetch(`/_monitor/raw/${encodeURIComponent(id)}/response-partial`);
+    if (!resp.ok) {
+      const rec = await fetchJSON(`/_monitor/request/${encodeURIComponent(id)}`);
+      if (isCompleted(rec)) {
+        stopPartialPoll();
+        el.rawResp.textContent = "Loading response payload...";
+        const rawResp = await fetchRaw(id, "response");
+        if (state.selectedId === id) {
+          el.rawResp.textContent = rawResp;
+          el.structuredResp.textContent = buildStructuredResponseView(rawResp, rec);
+          el.parsedResp.textContent = buildParsedResponseView(rawResp, rec, state.showContentInParsed);
+        }
+      }
+      return;
+    }
+    const text = await resp.text();
+    if (state.selectedId !== id) {
+      stopPartialPoll();
+      return;
+    }
+    el.rawResp.textContent = text;
+    const rec = await fetchJSON(`/_monitor/request/${encodeURIComponent(id)}`);
+    if (state.selectedId === id) {
+      el.structuredResp.textContent = buildStructuredResponseView(text, rec);
+      el.parsedResp.textContent = buildParsedResponseView(text, rec, state.showContentInParsed);
+    }
+  } catch (e) {
+    // ignore poll errors
+  }
+}
 
-  el.rawReq.textContent = rawReq;
-  el.structuredResp.textContent = buildStructuredResponseView(rawResp, rec);
-  el.parsedResp.textContent = buildParsedResponseView(rawResp, rec, state.showContentInParsed);
-  el.rawResp.textContent = rawResp;
+function startPartialPoll(id) {
+  stopPartialPoll();
+  state.partialPollTimer = setInterval(() => pollPartialResponse(id), 500);
+}
+
+function stopPartialPoll() {
+  if (state.partialPollTimer) {
+    clearInterval(state.partialPollTimer);
+    state.partialPollTimer = null;
+  }
 }
 
 function clearDetails() {
+  stopPartialPoll();
   state.selectedId = null;
   el.drawer.classList.remove("open");
   el.drawer.setAttribute("aria-hidden", "true");

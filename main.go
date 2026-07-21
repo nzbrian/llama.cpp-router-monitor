@@ -355,6 +355,28 @@ func (s *Server) handleRaw(w http.ResponseWriter, p string) {
 		return
 	}
 
+	if kind == "response-partial" {
+		if rec.StatusCode != 0 {
+			writeJSON(w, http.StatusNotFound, map[string]any{"error": "request not in progress"})
+			return
+		}
+		partialPath, ok := findPartialPath(s.cfg.DataDir, id, "response")
+		if !ok {
+			writeJSON(w, http.StatusNotFound, map[string]any{"error": "partial response not yet available"})
+			return
+		}
+		data, err := os.ReadFile(partialPath)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+		w.Header().Set("X-Request-ID", id)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(data)
+		return
+	}
+
 	var rel string
 	if kind == "request" {
 		rel = rec.RequestRawPath
@@ -527,19 +549,52 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 	var chunks int64
 	capturer := newLimitedBuffer(s.cfg.MaxCaptureBytes)
 
+	var partialFile *os.File
+	var partialPath string
 	if isStreamingResponse(resp, isStreaming) {
-		copied, firstByteMs, chunks, err = streamCopySSE(w, resp.Body, capturer, started)
+		partialPath = computePartialPath(s.cfg.DataDir, requestID, "response")
+		pf, perr := os.Create(partialPath)
+		if perr != nil {
+			log.Printf("create partial file failed req=%s: %v", requestID, perr)
+		} else {
+			partialFile = pf
+		}
+	}
+
+	if isStreamingResponse(resp, isStreaming) {
+		copied, firstByteMs, chunks, err = streamCopySSE(w, resp.Body, capturer, partialFile, started)
 	} else {
-		copied, firstByteMs, err = streamCopy(w, resp.Body, capturer, started)
+		copied, firstByteMs, err = streamCopy(w, resp.Body, capturer, partialFile, started)
 	}
 	if err != nil && !errors.Is(err, context.Canceled) {
 		log.Printf("copy response failed req=%s: %v", requestID, err)
 	}
 
-	respBytes := capturer.Bytes()
-	respRawPath, saveErr := s.saveRawPayload(requestID, "response", respBytes)
-	if saveErr != nil {
-		log.Printf("save response raw failed: %v", saveErr)
+	var respRawPath string
+	var saveErr error
+	var respBytes []byte
+	if partialFile != nil {
+		partialFile.Close()
+		if partialData, perr := os.ReadFile(partialPath); perr == nil && len(partialData) > 0 {
+			respRawPath, saveErr = s.saveRawPayload(requestID, "response", partialData)
+			if saveErr != nil {
+				log.Printf("save response raw failed: %v", saveErr)
+			}
+			respBytes = partialData
+		} else {
+			respBytes = capturer.Bytes()
+			respRawPath, saveErr = s.saveRawPayload(requestID, "response", respBytes)
+			if saveErr != nil {
+				log.Printf("save response raw failed: %v", saveErr)
+			}
+		}
+		os.Remove(partialPath)
+	} else {
+		respBytes = capturer.Bytes()
+		respRawPath, saveErr = s.saveRawPayload(requestID, "response", respBytes)
+		if saveErr != nil {
+			log.Printf("save response raw failed: %v", saveErr)
+		}
 	}
 
 	meta := parseResponseMeta(resp.Header, respBytes)
@@ -629,7 +684,7 @@ type responseMeta struct {
 	CompletionMs       float64
 }
 
-func streamCopy(w http.ResponseWriter, src io.Reader, capture *limitedBuffer, started time.Time) (copied int64, firstByteMs float64, err error) {
+func streamCopy(w http.ResponseWriter, src io.Reader, capture *limitedBuffer, partialFile *os.File, started time.Time) (copied int64, firstByteMs float64, err error) {
 	flusher, _ := w.(http.Flusher)
 	buf := make([]byte, 32*1024)
 	seenFirst := false
@@ -645,6 +700,9 @@ func streamCopy(w http.ResponseWriter, src io.Reader, capture *limitedBuffer, st
 			if wn > 0 {
 				copied += int64(wn)
 				_, _ = capture.Write(chunk[:wn])
+				if partialFile != nil {
+					_, _ = partialFile.Write(chunk[:wn])
+				}
 				if flusher != nil {
 					flusher.Flush()
 				}
@@ -662,7 +720,7 @@ func streamCopy(w http.ResponseWriter, src io.Reader, capture *limitedBuffer, st
 	}
 }
 
-func streamCopySSE(w http.ResponseWriter, src io.Reader, capture *limitedBuffer, started time.Time) (copied int64, firstByteMs float64, chunks int64, err error) {
+func streamCopySSE(w http.ResponseWriter, src io.Reader, capture *limitedBuffer, partialFile *os.File, started time.Time) (copied int64, firstByteMs float64, chunks int64, err error) {
 	flusher, _ := w.(http.Flusher)
 	reader := bufio.NewReader(src)
 	seenFirst := false
@@ -683,6 +741,9 @@ func streamCopySSE(w http.ResponseWriter, src io.Reader, capture *limitedBuffer,
 			if wn > 0 {
 				copied += int64(wn)
 				_, _ = capture.Write(line[:wn])
+				if partialFile != nil {
+					_, _ = partialFile.Write(line[:wn])
+				}
 				if flusher != nil {
 					flusher.Flush()
 				}
@@ -1007,6 +1068,19 @@ func findRawPayloadPath(dataDir, requestID, kind string) (string, bool) {
 	return "", false
 }
 
+func computePartialPath(dataDir, requestID, kind string) string {
+	dateDir := time.Now().UTC().Format("2006-01-02")
+	return filepath.Join(dataDir, "raw", dateDir, fmt.Sprintf("%s-%s-partial.raw", requestID, kind))
+}
+
+func findPartialPath(dataDir, requestID, kind string) (string, bool) {
+	partialPath := computePartialPath(dataDir, requestID, kind)
+	if _, err := os.Stat(partialPath); err == nil {
+		return partialPath, true
+	}
+	return "", false
+}
+
 func repairStuckRequests(db *sql.DB, dataDir string) error {
 	rows, err := db.Query(`SELECT
 		id, created_at, method, path, query, client_ip, backend_url, model,
@@ -1025,13 +1099,34 @@ func repairStuckRequests(db *sql.DB, dataDir string) error {
 		if err != nil {
 			return err
 		}
+
+		var respBytes []byte
+		var respAbs string
 		respRel, ok := findRawPayloadPath(dataDir, rec.ID, "response")
-		if !ok {
-			continue
+		if ok {
+			respAbs = filepath.Join(dataDir, respRel)
+			respBytes, err = readGzipFile(respAbs)
+			if err != nil {
+				continue
+			}
+		} else {
+			partialPath, pOk := findPartialPath(dataDir, rec.ID, "response")
+			if !pOk {
+				continue
+			}
+			respBytes, err = os.ReadFile(partialPath)
+			if err != nil {
+				continue
+			}
+			srv := &Server{cfg: Config{DataDir: dataDir}}
+			newRel, saveErr := srv.saveRawPayload(rec.ID, "response", respBytes)
+			if saveErr == nil {
+				respRel = newRel
+				ok = true
+			}
+			os.Remove(partialPath)
 		}
-		respAbs := filepath.Join(dataDir, respRel)
-		respBytes, err := readGzipFile(respAbs)
-		if err != nil {
+		if !ok {
 			continue
 		}
 		meta := parseResponseMeta(http.Header{"Content-Type": []string{"text/event-stream"}}, respBytes)

@@ -1,6 +1,7 @@
 data/
 .env
 llama-cpp-router-monitor
+.opencode
 
 # Go
 bin/
