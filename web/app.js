@@ -640,9 +640,7 @@ function renderRequests(items) {
       <td class="align-right ${rateTone(item.decode_tok_per_sec || 0)}">${numericCell(fmtRate(item.decode_tok_per_sec || 0), `prompt ${fmtRate(item.prompt_tok_per_sec || 0)}`)}</td>
     `;
 
-    if (completed) {
-      row.addEventListener("click", () => openDetails(item.id));
-    }
+    row.addEventListener("click", () => openDetails(item.id));
     el.body.appendChild(row);
   }
   updateOutputRateFromRows(items);
