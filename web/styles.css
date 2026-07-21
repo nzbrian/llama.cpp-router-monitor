@@ -1230,7 +1230,7 @@ tbody tr.is-selected .sticky-col {
   border-radius: 2px;
   border: 1px solid var(--line);
   background: rgba(2, 4, 6, 0.98);
-  overflow: auto;
+  overflow: scroll;
   white-space: pre-wrap;
   color: #d8e7f2;
   font: 11px/1.45 "Consolas", "Cascadia Mono", monospace;
