@@ -1226,6 +1226,7 @@ tbody tr.is-selected .sticky-col {
   display: none;
   flex: 1;
   min-height: 240px;
+  max-height: calc(100vh - 340px);
   padding: 10px;
   border-radius: 2px;
   border: 1px solid var(--line);
