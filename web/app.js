@@ -79,6 +79,7 @@ const el = {
   fStatus: document.getElementById("fStatus"),
   fSince: document.getElementById("fSince"),
   fStream: document.getElementById("fStream"),
+  fBackend: document.getElementById("fBackend"),
   fErrorsOnly: document.getElementById("fErrorsOnly"),
   fWithTokens: document.getElementById("fWithTokens"),
   fChatCompletions: document.getElementById("fChatCompletions"),
@@ -428,6 +429,7 @@ function collectFilters() {
   if (el.fStatus.value.trim()) filters.status = el.fStatus.value.trim();
   if (el.fSince.value.trim()) filters.since_hours = el.fSince.value.trim();
   if (el.fStream.value) filters.stream = el.fStream.value;
+  if (el.fBackend.value) filters.backend = el.fBackend.value;
   if (el.fErrorsOnly.checked) filters.errors_only = "true";
   if (el.fWithTokens.checked) filters.with_tokens = "true";
   if (el.fChatCompletions.checked) filters.chat_completions_only = "true";
@@ -444,6 +446,7 @@ function resetFilters() {
   el.fStatus.value = "";
   el.fSince.value = "";
   el.fStream.value = "";
+  el.fBackend.value = "";
   el.fErrorsOnly.checked = false;
   el.fWithTokens.checked = false;
   el.fChatCompletions.checked = false;
@@ -525,6 +528,60 @@ function updateOutputRateFromRows(items) {
   el.outputSec.textContent = fmtRate(avg);
 }
 
+function truncateBackend(url) {
+  try {
+    const u = new URL(url);
+    return `${u.hostname}:${u.port || u.pathname.replace(/^\//, "")}`;
+  } catch {
+    return url;
+  }
+}
+
+function renderBackendBreakdown(stats) {
+  const backends = stats.by_backend || [];
+  const panel = document.getElementById("backendBreakdownPanel");
+  const grid = document.getElementById("backendCardGrid");
+
+  if (!backends.length) {
+    panel.hidden = true;
+    return;
+  }
+
+  panel.hidden = false;
+  grid.innerHTML = "";
+
+  for (const be of backends) {
+    const card = document.createElement("div");
+    card.className = "backend-card";
+    const errorClass = (be.error_rate || 0) >= 0.1 ? " tone-err" : (be.error_rate || 0) >= 0.05 ? " tone-warm" : "";
+    card.innerHTML = `
+      <div class="backend-url">${escapeHTML(truncateBackend(be.backend_url))}</div>
+      <div class="backend-metrics">
+        <span class="backend-metric"><strong>${fmtNum(be.total_requests || 0)}</strong><span>req</span></span>
+        <span class="backend-metric"><strong>${fmtNum(be.total_tokens || 0)}</strong><span>tok</span></span>
+        <span class="backend-metric${errorClass}"><strong>${fmtPercent(be.error_rate || 0)}</strong><span>err</span></span>
+      </div>
+    `;
+    grid.appendChild(card);
+  }
+
+  populateBackendFilter(backends.map(b => b.backend_url));
+}
+
+function populateBackendFilter(backendURLs) {
+  const currentValue = el.fBackend.value;
+  el.fBackend.innerHTML = '<option value="">All backends</option>';
+  for (const url of backendURLs) {
+    const option = document.createElement("option");
+    option.value = url;
+    option.textContent = truncateBackend(url);
+    if (url === currentValue) {
+      option.selected = true;
+    }
+    el.fBackend.appendChild(option);
+  }
+}
+
 async function loadStats() {
   const hours = Number.parseInt(state.filters.since_hours || "1", 10) || 1;
   const stats = await fetchJSON(`/_monitor/stats?${queryString({ hours, ...state.filters })}`);
@@ -539,6 +596,8 @@ async function loadStats() {
   el.ttft.textContent = fmtMs(stats.avg_first_byte_ms || 0);
   el.errorRate.textContent = fmtPercent(stats.error_rate || 0);
   el.lastUpdated.textContent = fmtDate(new Date().toISOString());
+
+  renderBackendBreakdown(stats);
 }
 
 async function loadModelOptions() {
@@ -631,6 +690,9 @@ function renderRequests(items) {
       <td class="align-left">
         <div class="model-text cell-metric">${escapeHTML(item.model || "-")}</div>
         <div class="cell-subtle">${!completed ? "in progress" : item.is_streaming ? "streaming" : "standard"}</div>
+      </td>
+      <td class="align-left">
+        <div class="model-text cell-metric">${escapeHTML(truncateBackend(item.backend_url || "-"))}</div>
       </td>
       <td class="align-right ${latencyTone(item.first_byte_ms)}">${numericCell(fmtMs(item.first_byte_ms), "first token")}</td>
       <td class="align-right">${numericCell(fmtMs(item.total_ms), !completed ? "running" : `${fmtNum(item.chunks_count || 0)} chunks`)}</td>

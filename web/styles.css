@@ -475,6 +475,75 @@ select {
   box-shadow: inset 2px 0 0 rgba(215, 224, 234, 0.7), var(--shadow);
 }
 
+.backend-breakdown-panel {
+  margin-top: 8px;
+  padding: 10px;
+}
+
+.backend-breakdown-scroll {
+  overflow-x: auto;
+}
+
+.backend-card-grid {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.backend-card {
+  flex: 0 0 auto;
+  min-width: 140px;
+  padding: 8px 9px 7px;
+  border-radius: var(--radius);
+  background: rgba(10, 12, 16, 0.98);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow);
+}
+
+.backend-card .backend-url {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  margin-bottom: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.backend-metrics {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.backend-metric {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  font-size: 10px;
+}
+
+.backend-metric strong {
+  font-family: "Consolas", "Cascadia Mono", monospace;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.backend-metric span {
+  color: var(--muted);
+}
+
+.backend-metric.tone-err strong {
+  color: #ff7f7f;
+}
+
+.backend-metric.tone-warm strong {
+  color: #ffd27f;
+}
+
 .workspace {
   margin-top: 8px;
   display: grid;
@@ -735,7 +804,8 @@ table {
 .col-time { width: 124px; }
 .col-request { width: 184px; }
 .col-status { width: 74px; }
-.col-model { width: 170px; }
+.col-model { width: 140px; }
+.col-backend { width: 130px; }
 .col-latency { width: 88px; }
 .col-token { width: 92px; }
 .col-cache { width: 82px; }

@@ -27,23 +27,59 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+type BackendConfig struct {
+	URL        string
+	ListenAddr string
+}
+
 type Config struct {
-	ListenAddr          string
-	DefaultBackend      string
-	AllowDynamicBackend bool
-	DataDir             string
-	RetentionDays       int
-	MaxRequestBytes     int64
-	MaxCaptureBytes     int64
-	RequestTimeout      time.Duration
-	PollBackendMetrics  bool
-	PollInterval        time.Duration
+	MonitorListenAddr    string
+	Backends             []BackendConfig
+	AllowDynamicBackend  bool
+	DataDir              string
+	RetentionDays        int
+	MaxRequestBytes      int64
+	MaxCaptureBytes      int64
+	RequestTimeout       time.Duration
+	PollBackendMetrics   bool
+	PollInterval         time.Duration
 }
 
 func loadConfig() Config {
+	backendURLs := splitAndTrim(getEnv("BACKEND_URLS", ""))
+	listenAddrs := splitAndTrim(getEnv("LISTEN_ADDRS", ""))
+
+	if len(backendURLs) == 0 || (len(backendURLs) == 1 && backendURLs[0] == "") {
+		log.Fatal("BACKEND_URLS is required (comma-separated list of llama.cpp backend URLs)")
+	}
+
+	if len(listenAddrs) != len(backendURLs) {
+		log.Fatalf("LISTEN_ADDRS must have exactly %d entries to match BACKEND_URLS", len(backendURLs))
+	}
+
+	backends := make([]BackendConfig, 0, len(backendURLs))
+	for i, url := range backendURLs {
+		url = strings.TrimRight(url, "/")
+		if err := validateBackendURL(url); err != nil {
+			log.Fatalf("invalid backend URL %q: %v", url, err)
+		}
+		backends = append(backends, BackendConfig{
+			URL:        url,
+			ListenAddr: listenAddrs[i],
+		})
+	}
+
+	seen := map[string]bool{}
+	for _, be := range backends {
+		if seen[be.ListenAddr] {
+			log.Fatalf("duplicate listen address: %s", be.ListenAddr)
+		}
+		seen[be.ListenAddr] = true
+	}
+
 	return Config{
-		ListenAddr:          getEnv("LISTEN_ADDR", ":9091"),
-		DefaultBackend:      strings.TrimRight(getEnv("DEFAULT_BACKEND_URL", "http://host.docker.internal:8080"), "/"),
+		MonitorListenAddr:   getEnv("MONITOR_LISTEN_ADDR", ":9090"),
+		Backends:            backends,
 		AllowDynamicBackend: getEnvBool("ALLOW_DYNAMIC_BACKEND", true),
 		DataDir:             getEnv("DATA_DIR", "/app/data"),
 		RetentionDays:       getEnvInt("RETENTION_DAYS", 14),
@@ -55,12 +91,34 @@ func loadConfig() Config {
 	}
 }
 
+type ctxKey int
+
+const backendOverrideKey ctxKey = 0
+
 type Server struct {
 	cfg    Config
 	db     *sql.DB
 	client *http.Client
 	hub    *EventHub
 	active atomic.Int64
+}
+
+type proxyHandler struct {
+	s       *Server
+	backend string
+}
+
+func (h *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	ctx := context.WithValue(r.Context(), backendOverrideKey, h.backend)
+	h.s.handleProxy(w, r.WithContext(ctx))
+}
+
+type monitorHandler struct {
+	s *Server
+}
+
+func (h *monitorHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	h.s.handleMonitor(w, r)
 }
 
 type RequestRecord struct {
@@ -106,6 +164,7 @@ type RequestFilter struct {
 	ErrorsOnly          bool
 	WithTokens          bool
 	ChatCompletionsOnly bool
+	Backend             string
 }
 
 type EventHub struct {
@@ -154,8 +213,10 @@ func (h *EventHub) Broadcast(v any) {
 func main() {
 	cfg := loadConfig()
 
-	if err := validateBackendURL(cfg.DefaultBackend); err != nil {
-		log.Fatalf("invalid DEFAULT_BACKEND_URL: %v", err)
+	for _, be := range cfg.Backends {
+		if err := validateBackendURL(be.URL); err != nil {
+			log.Fatalf("invalid backend URL %q: %v", be.URL, err)
+		}
 	}
 	if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {
 		log.Fatalf("mkdir data dir: %v", err)
@@ -206,10 +267,26 @@ func main() {
 		go s.backendMetricsLoop(ctx)
 	}
 
-	log.Printf("llama.cpp Router Monitor listening on %s, backend=%s", cfg.ListenAddr, cfg.DefaultBackend)
-	if err := http.ListenAndServe(cfg.ListenAddr, s); err != nil {
-		log.Fatalf("server failed: %v", err)
+	mh := &monitorHandler{s: s}
+	go func() {
+		log.Printf("Monitor UI listening on %s", cfg.MonitorListenAddr)
+		if err := http.ListenAndServe(cfg.MonitorListenAddr, mh); err != nil {
+			log.Fatalf("monitor server failed: %v", err)
+		}
+	}()
+
+	for _, be := range cfg.Backends {
+		handler := &proxyHandler{s: s, backend: be.URL}
+		go func(addr string, h http.Handler, url string) {
+			log.Printf("Proxy listening on %s -> %s", addr, url)
+			if err := http.ListenAndServe(addr, h); err != nil {
+				log.Fatalf("proxy server failed on %s: %v", addr, err)
+			}
+		}(be.ListenAddr, handler, be.URL)
 	}
+
+	log.Printf("llama.cpp Router Monitor started with %d backend(s)", len(cfg.Backends))
+	select {}
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -240,6 +317,7 @@ func (s *Server) handleMonitor(w http.ResponseWriter, r *http.Request) {
 				"/_monitor/raw/{id}/{request|response}",
 				"/_monitor/events",
 				"/_monitor/backend-metrics?limit=200",
+				"/_monitor/backends",
 				"/_monitor/ui",
 			},
 		})
@@ -254,6 +332,12 @@ func (s *Server) handleMonitor(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
+		}
+		byBackend, berr := s.getBackendBreakdown(hours, f)
+		if berr != nil {
+			log.Printf("backend breakdown failed: %v", berr)
+		} else {
+			stats["by_backend"] = byBackend
 		}
 		writeJSON(w, http.StatusOK, stats)
 	case p == "/models":
@@ -278,6 +362,15 @@ func (s *Server) handleMonitor(w http.ResponseWriter, r *http.Request) {
 		s.handleEvents(w, r)
 	case p == "/live":
 		writeJSON(w, http.StatusOK, map[string]any{"active_connections": s.active.Load(), "time": time.Now().UTC()})
+	case p == "/backends":
+		items := make([]map[string]any, 0, len(s.cfg.Backends))
+		for _, be := range s.cfg.Backends {
+			items = append(items, map[string]any{
+				"url":         be.URL,
+				"listen_addr": be.ListenAddr,
+			})
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": items})
 	case p == "/backend-metrics":
 		limit := getQueryInt(r, "limit", 200)
 		items, err := s.getBackendMetrics(limit)
@@ -329,6 +422,7 @@ func parseRequestFilter(r *http.Request) RequestFilter {
 		ErrorsOnly:          getQueryBool(r, "errors_only", false),
 		WithTokens:          getQueryBool(r, "with_tokens", false),
 		ChatCompletionsOnly: getQueryBool(r, "chat_completions_only", false),
+		Backend:             strings.TrimSpace(r.URL.Query().Get("backend")),
 	}
 	if stream, ok := getOptionalQueryBool(r, "stream"); ok {
 		f.Streaming = &stream
@@ -650,7 +744,13 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) selectBackend(r *http.Request) (backend string, query string, err error) {
-	backend = s.cfg.DefaultBackend
+	backend = ""
+	if override, ok := r.Context().Value(backendOverrideKey).(string); ok && override != "" {
+		backend = override
+	}
+	if backend == "" && len(s.cfg.Backends) > 0 {
+		backend = s.cfg.Backends[0].URL
+	}
 	vals := r.URL.Query()
 	if s.cfg.AllowDynamicBackend {
 		if b := strings.TrimSpace(r.Header.Get("X-Backend-URL")); b != "" {
@@ -1424,6 +1524,62 @@ func (s *Server) getStats(hours int, f RequestFilter) (map[string]any, error) {
 	}, nil
 }
 
+func (s *Server) getBackendBreakdown(hours int, f RequestFilter) ([]map[string]any, error) {
+	if hours <= 0 {
+		hours = 24
+	}
+	since := time.Now().UTC().Add(-time.Duration(hours) * time.Hour).Format(time.RFC3339Nano)
+
+	query := `SELECT
+		backend_url,
+		COUNT(*),
+		COALESCE(SUM(total_tokens),0),
+		COALESCE(AVG(total_ms),0),
+		COALESCE(SUM(CASE WHEN status_code >= 400 OR error_text != '' THEN 1 ELSE 0 END),0)
+		FROM requests WHERE created_at >= ? AND backend_url != ''`
+	args := []any{since}
+
+	if f.Backend != "" {
+		query += ` AND backend_url = ?`
+		args = append(args, f.Backend)
+	}
+
+	query += ` GROUP BY backend_url ORDER BY backend_url`
+
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]map[string]any, 0)
+	for rows.Next() {
+		var backendURL string
+		var totalRequests int64
+		var totalTokens int64
+		var avgTotalMs float64
+		var errorsCount int64
+
+		if err := rows.Scan(&backendURL, &totalRequests, &totalTokens, &avgTotalMs, &errorsCount); err != nil {
+			return nil, err
+		}
+
+		errorRate := 0.0
+		if totalRequests > 0 {
+			errorRate = float64(errorsCount) / float64(totalRequests)
+		}
+
+		out = append(out, map[string]any{
+			"backend_url":     backendURL,
+			"total_requests":  totalRequests,
+			"total_tokens":    totalTokens,
+			"avg_total_ms":    avgTotalMs,
+			"error_rate":      errorRate,
+		})
+	}
+	return out, rows.Err()
+}
+
 func (s *Server) getModels() ([]string, error) {
 	rows, err := s.db.Query(`SELECT DISTINCT model
 		FROM requests
@@ -1533,6 +1689,10 @@ func (s *Server) cleanup() {
 }
 
 func appendRequestFilterSQL(query string, args []any, f RequestFilter, includeSince bool) (string, []any) {
+	if f.Backend != "" {
+		query += ` AND backend_url = ?`
+		args = append(args, f.Backend)
+	}
 	if f.ChatCompletionsOnly {
 		query += ` AND method = ? AND path = ?`
 		args = append(args, http.MethodPost, "/v1/chat/completions")
@@ -1592,7 +1752,13 @@ func (s *Server) backendMetricsLoop(ctx context.Context) {
 }
 
 func (s *Server) pollBackendMetrics(ctx context.Context) {
-	u := s.cfg.DefaultBackend + "/metrics"
+	for _, be := range s.cfg.Backends {
+		s.pollSingleBackend(ctx, be.URL)
+	}
+}
+
+func (s *Server) pollSingleBackend(ctx context.Context, backendURL string) {
+	u := backendURL + "/metrics"
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	resp, err := s.client.Do(req)
 	if err != nil {
@@ -1614,7 +1780,7 @@ func (s *Server) pollBackendMetrics(ctx context.Context) {
 			return err
 		}
 		for name, value := range metrics {
-			if _, err := tx.Exec(`INSERT INTO backend_metrics (created_at, backend_url, metric_name, metric_value) VALUES (?, ?, ?, ?)`, now, s.cfg.DefaultBackend, name, value); err != nil {
+			if _, err := tx.Exec(`INSERT INTO backend_metrics (created_at, backend_url, metric_name, metric_value) VALUES (?, ?, ?, ?)`, now, backendURL, name, value); err != nil {
 				_ = tx.Rollback()
 				return err
 			}
@@ -1844,6 +2010,21 @@ func boolToInt(v bool) int {
 		return 1
 	}
 	return 0
+}
+
+func splitAndTrim(s string) []string {
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func getEnv(name string, fallback string) string {

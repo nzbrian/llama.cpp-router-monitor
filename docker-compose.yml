@@ -3,10 +3,12 @@ services:
     build: .
     container_name: llama-cpp-router-monitor
     ports:
+      - "9090:9090"
       - "9091:9091"
     environment:
-      - LISTEN_ADDR=:9091
-      - DEFAULT_BACKEND_URL=${DEFAULT_BACKEND_URL:-http://host.docker.internal:8080}
+      - MONITOR_LISTEN_ADDR=:9090
+      - BACKEND_URLS=${BACKEND_URLS:-http://host.docker.internal:8080}
+      - LISTEN_ADDRS=${LISTEN_ADDRS:-:9091}
       - ALLOW_DYNAMIC_BACKEND=${ALLOW_DYNAMIC_BACKEND:-true}
       - RETENTION_DAYS=${RETENTION_DAYS:-14}
       - MAX_REQUEST_BYTES=${MAX_REQUEST_BYTES:-33554432}

@@ -91,6 +91,18 @@
       </article>
     </section>
 
+    <section class="panel backend-breakdown-panel" id="backendBreakdownPanel" hidden>
+      <div class="panel-head compact-head">
+        <div>
+          <p class="panel-kicker">Per-backend breakdown</p>
+          <h2>Backends</h2>
+        </div>
+      </div>
+      <div class="backend-breakdown-scroll">
+        <div class="backend-card-grid" id="backendCardGrid"></div>
+      </div>
+    </section>
+
     <section class="workspace">
       <section class="panel filter-panel">
         <div class="panel-head compact-head">
@@ -147,6 +159,12 @@
               <option value="false">Non-streaming</option>
             </select>
           </label>
+          <label class="field small-field">
+            <span>Backend</span>
+            <select id="fBackend">
+              <option value="">All backends</option>
+            </select>
+          </label>
           <div class="quick-filters">
             <label class="field field-checkbox">
               <span>Only failures</span>
@@ -182,34 +200,36 @@
 
         <div class="table-scroll">
           <table>
-            <colgroup>
-              <col class="col-time" />
-              <col class="col-request" />
-              <col class="col-status" />
-              <col class="col-model" />
-              <col class="col-latency" />
-              <col class="col-latency" />
-              <col class="col-token" />
-              <col class="col-token" />
-              <col class="col-token" />
-              <col class="col-cache" />
-              <col class="col-rate" />
-            </colgroup>
-            <thead>
-              <tr>
-                <th class="align-left">Time</th>
-                <th class="align-left">Request</th>
-                <th class="align-center">Status</th>
-                <th class="align-left">Model</th>
-                <th class="align-right">TTFT</th>
-                <th class="align-right">Total</th>
-                <th class="align-right">Prompt</th>
-                <th class="align-right">Completion</th>
-                <th class="align-right">Total tok</th>
-                <th class="align-right">Cache</th>
-                <th class="align-right">Prompt/s</th>
-              </tr>
-            </thead>
+              <colgroup>
+               <col class="col-time" />
+               <col class="col-request" />
+               <col class="col-status" />
+               <col class="col-model" />
+               <col class="col-backend" />
+               <col class="col-latency" />
+               <col class="col-latency" />
+               <col class="col-token" />
+               <col class="col-token" />
+               <col class="col-token" />
+               <col class="col-cache" />
+               <col class="col-rate" />
+             </colgroup>
+             <thead>
+               <tr>
+                 <th class="align-left">Time</th>
+                 <th class="align-left">Request</th>
+                 <th class="align-center">Status</th>
+                 <th class="align-left">Model</th>
+                 <th class="align-left">Backend</th>
+                 <th class="align-right">TTFT</th>
+                 <th class="align-right">Total</th>
+                 <th class="align-right">Prompt</th>
+                 <th class="align-right">Completion</th>
+                 <th class="align-right">Total tok</th>
+                 <th class="align-right">Cache</th>
+                 <th class="align-right">Prompt/s</th>
+               </tr>
+             </thead>
             <tbody id="requestsBody"></tbody>
           </table>
         </div>

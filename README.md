@@ -93,7 +93,7 @@ http://host.docker.internal:8080
 ### 3. Open the UI
 
 ```text
-http://localhost:9091/_monitor/ui
+http://localhost:9090/_monitor/ui
 ```
 
 ### 4. Point your client to the proxy
@@ -114,7 +114,8 @@ cp .env.example .env
 Then set:
 
 ```env
-DEFAULT_BACKEND_URL=http://host.docker.internal:8080
+BACKEND_URLS=http://host.docker.internal:8080
+LISTEN_ADDRS=:9091
 ```
 
 ## Windows Autostart
@@ -157,11 +158,35 @@ This project is designed for local use.
 - SQLite and raw payload files stay in `./data`
 - nothing is sent anywhere unless you expose the service yourself
 
-## Dynamic Backend Override
+## Multi-Backend Support
 
-By default, requests go to `DEFAULT_BACKEND_URL`.
+You can monitor multiple `llama.cpp` instances at once. Each backend gets its own
+proxy port, while all monitoring data is aggregated on a single UI page.
 
-You can override the backend per request with:
+### Configuration
+
+Use `BACKEND_URLS` and `LISTEN_ADDRS` (comma-separated, one entry per backend):
+
+```env
+MONITOR_LISTEN_ADDR=:9090
+BACKEND_URLS=http://host.docker.internal:8080,http://host.docker.internal:8081
+LISTEN_ADDRS=:9091,:9092
+```
+
+This creates three listeners:
+
+| Port | Purpose | Routes to |
+|---|---|---|
+| `:9090` | Monitor UI + API (`/_monitor/*`) | — |
+| `:9091` | Proxy | `http://host.docker.internal:8080` |
+| `:9092` | Proxy | `http://host.docker.internal:8081` |
+
+The monitor UI at `http://localhost:9090/_monitor/ui` shows all backends on one page,
+with a per-backend breakdown strip and a Backend column in the request table.
+
+### Dynamic Backend Override (per-request)
+
+If `ALLOW_DYNAMIC_BACKEND=true`, you can override the backend for a single request with:
 
 - header:
 
@@ -204,6 +229,7 @@ RETENTION_DAYS=0
 - `GET /_monitor/raw/{id}/response`
 - `GET /_monitor/events`
 - `GET /_monitor/backend-metrics?limit=200`
+- `GET /_monitor/backends`
 - `GET /_monitor/ui`
 
 Supported request filters:
@@ -217,6 +243,7 @@ Supported request filters:
 - `stream`
 - `errors_only`
 - `with_tokens`
+- `backend`
 
 ## Example Request
 
@@ -230,16 +257,17 @@ curl http://localhost:9091/v1/chat/completions \
 
 Main environment variables:
 
-- `LISTEN_ADDR`
-- `DEFAULT_BACKEND_URL`
-- `ALLOW_DYNAMIC_BACKEND`
-- `RETENTION_DAYS`
-- `MAX_REQUEST_BYTES`
-- `MAX_CAPTURE_BYTES`
-- `REQUEST_TIMEOUT_SECONDS`
-- `POLL_BACKEND_METRICS`
-- `POLL_INTERVAL_SECONDS`
-- `DATA_DIR`
+- `MONITOR_LISTEN_ADDR` — port for the monitor UI and API (default `:9090`)
+- `BACKEND_URLS` — comma-separated list of llama.cpp backend URLs
+- `LISTEN_ADDRS` — comma-separated proxy ports, one per backend URL
+- `ALLOW_DYNAMIC_BACKEND` — allow per-request backend override (default `true`)
+- `RETENTION_DAYS` — days to keep data before cleanup (default `14`, `0` disables)
+- `MAX_REQUEST_BYTES` — max request body size in bytes (default `33554432`)
+- `MAX_CAPTURE_BYTES` — max response payload to capture in bytes (default `33554432`)
+- `REQUEST_TIMEOUT_SECONDS` — per-request timeout (default `600`)
+- `POLL_BACKEND_METRICS` — enable `/metrics` scraping from backends (default `true`)
+- `POLL_INTERVAL_SECONDS` — metrics polling interval (default `10`)
+- `DATA_DIR` — data directory (default `/app/data`)
 
 See [`.env.example`](./.env.example) for defaults.
 

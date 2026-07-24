@@ -108,11 +108,11 @@ func TestHandleProxyNonStreamingLlamaCppJSON(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	svc, db, cleanup := newTestServer(t, backend.URL)
+	_, handler, db, cleanup := newTestServer(t, backend.URL)
 	defer cleanup()
 	defer db.Close()
 
-	proxy := httptest.NewServer(svc)
+	proxy := httptest.NewServer(handler)
 	defer proxy.Close()
 
 	resp, err := proxy.Client().Post(proxy.URL+"/completion", "application/json", strings.NewReader(`{"model":"request-model","prompt":"hi"}`))
@@ -178,11 +178,11 @@ func TestHandleProxyStreamingLifecycle(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	svc, db, cleanup := newTestServer(t, backend.URL)
+	_, handler, db, cleanup := newTestServer(t, backend.URL)
 	defer cleanup()
 	defer db.Close()
 
-	proxy := httptest.NewServer(svc)
+	proxy := httptest.NewServer(handler)
 	defer proxy.Close()
 
 	client := proxy.Client()
@@ -277,7 +277,7 @@ func TestHandleProxyStreamingLifecycle(t *testing.T) {
 }
 
 func TestDeleteRequestByIDRemovesRowAndRawFiles(t *testing.T) {
-	svc, db, cleanup := newTestServer(t, "http://example.invalid")
+	svc, _, db, cleanup := newTestServer(t, "http://example.invalid")
 	defer cleanup()
 	defer db.Close()
 
@@ -325,7 +325,7 @@ func TestDeleteRequestByIDRemovesRowAndRawFiles(t *testing.T) {
 }
 
 func TestHandleRawReturnsSavedPayload(t *testing.T) {
-	svc, db, cleanup := newTestServer(t, "http://example.invalid")
+	svc, _, db, cleanup := newTestServer(t, "http://example.invalid")
 	defer cleanup()
 	defer db.Close()
 
@@ -354,7 +354,7 @@ func TestHandleRawReturnsSavedPayload(t *testing.T) {
 }
 
 func TestGetStatsAggregatesRollingAndLifetime(t *testing.T) {
-	svc, db, cleanup := newTestServer(t, "http://example.invalid")
+	svc, _, db, cleanup := newTestServer(t, "http://example.invalid")
 	defer cleanup()
 	defer db.Close()
 
@@ -461,7 +461,7 @@ func TestGetStatsAggregatesRollingAndLifetime(t *testing.T) {
 }
 
 func TestGetStatsIgnoresLiveRequestsInErrors(t *testing.T) {
-	svc, db, cleanup := newTestServer(t, "http://example.invalid")
+	svc, _, db, cleanup := newTestServer(t, "http://example.invalid")
 	defer cleanup()
 	defer db.Close()
 
@@ -499,7 +499,7 @@ func TestGetStatsIgnoresLiveRequestsInErrors(t *testing.T) {
 }
 
 func TestGetRequestsWithTokensFilter(t *testing.T) {
-	svc, db, cleanup := newTestServer(t, "http://example.invalid")
+	svc, _, db, cleanup := newTestServer(t, "http://example.invalid")
 	defer cleanup()
 	defer db.Close()
 
@@ -542,7 +542,7 @@ func TestGetRequestsWithTokensFilter(t *testing.T) {
 }
 
 func TestGetRequestsChatCompletionsOnlyFilter(t *testing.T) {
-	svc, db, cleanup := newTestServer(t, "http://example.invalid")
+	svc, _, db, cleanup := newTestServer(t, "http://example.invalid")
 	defer cleanup()
 	defer db.Close()
 
@@ -591,7 +591,7 @@ func TestGetRequestsChatCompletionsOnlyFilter(t *testing.T) {
 }
 
 func TestGetModelsReturnsDistinctSortedValues(t *testing.T) {
-	svc, db, cleanup := newTestServer(t, "http://example.invalid")
+	svc, _, db, cleanup := newTestServer(t, "http://example.invalid")
 	defer cleanup()
 	defer db.Close()
 
@@ -648,7 +648,7 @@ func TestGetModelsReturnsDistinctSortedValues(t *testing.T) {
 }
 
 func TestCacheFieldsPersistThroughDB(t *testing.T) {
-	svc, db, cleanup := newTestServer(t, "http://example.invalid")
+	svc, _, db, cleanup := newTestServer(t, "http://example.invalid")
 	defer cleanup()
 	defer db.Close()
 
@@ -681,7 +681,7 @@ func TestCacheFieldsPersistThroughDB(t *testing.T) {
 }
 
 func TestRepairStuckRequestsBackfillsCachedTokens(t *testing.T) {
-	svc, db, cleanup := newTestServer(t, "http://example.invalid")
+	svc, _, db, cleanup := newTestServer(t, "http://example.invalid")
 	defer cleanup()
 	defer db.Close()
 
@@ -737,7 +737,7 @@ func TestRepairStuckRequestsBackfillsCachedTokens(t *testing.T) {
 }
 
 func TestGetStatsRespectsFilters(t *testing.T) {
-	svc, db, cleanup := newTestServer(t, "http://example.invalid")
+	svc, _, db, cleanup := newTestServer(t, "http://example.invalid")
 	defer cleanup()
 	defer db.Close()
 
@@ -794,7 +794,7 @@ func TestGetStatsRespectsFilters(t *testing.T) {
 }
 
 func TestCleanupDisabledWhenRetentionNonPositive(t *testing.T) {
-	svc, db, cleanup := newTestServer(t, "http://example.invalid")
+	svc, _, db, cleanup := newTestServer(t, "http://example.invalid")
 	defer cleanup()
 	defer db.Close()
 
@@ -816,7 +816,285 @@ func TestCleanupDisabledWhenRetentionNonPositive(t *testing.T) {
 	}
 }
 
-func newTestServer(t *testing.T, backendURL string) (*Server, *sql.DB, func()) {
+func TestSplitAndTrim(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected []string
+	}{
+		{"", nil},
+		{"a", []string{"a"}},
+		{"a,b,c", []string{"a", "b", "c"}},
+		{" a , b , c ", []string{"a", "b", "c"}},
+		{",,,", nil},
+		{"  ", nil},
+	}
+	for _, tt := range tests {
+		got := splitAndTrim(tt.input)
+		if len(got) != len(tt.expected) {
+			t.Errorf("splitAndTrim(%q) = %v, want %v", tt.input, got, tt.expected)
+			continue
+		}
+		for i := range got {
+			if got[i] != tt.expected[i] {
+				t.Errorf("splitAndTrim(%q)[%d] = %q, want %q", tt.input, i, got[i], tt.expected[i])
+			}
+		}
+	}
+}
+
+func TestGetStatsByBackend(t *testing.T) {
+	svc, _, db, cleanup := newTestServer(t, "http://backend-a:8080")
+	defer cleanup()
+	defer db.Close()
+
+	now := time.Now().UTC()
+	for _, rec := range []RequestRecord{
+		{
+			ID:          "a1",
+			CreatedAt:   now.Add(-1 * time.Hour),
+			Method:      http.MethodPost,
+			Path:        "/v1/chat/completions",
+			BackendURL:  "http://backend-a:8080",
+			StatusCode:  http.StatusOK,
+			PromptTokens: 10,
+			CompletionTokens: 20,
+			TotalTokens: 30,
+		},
+		{
+			ID:          "b1",
+			CreatedAt:   now.Add(-1 * time.Hour),
+			Method:      http.MethodPost,
+			Path:        "/v1/chat/completions",
+			BackendURL:  "http://backend-b:8080",
+			StatusCode:  http.StatusOK,
+			PromptTokens: 5,
+			CompletionTokens: 15,
+			TotalTokens: 20,
+		},
+		{
+			ID:          "a2",
+			CreatedAt:   now.Add(-30 * time.Minute),
+			Method:      http.MethodPost,
+			Path:        "/v1/chat/completions",
+			BackendURL:  "http://backend-a:8080",
+			StatusCode:  http.StatusInternalServerError,
+			PromptTokens: 3,
+			TotalTokens: 3,
+			ErrorText:   "backend exploded",
+		},
+	} {
+		if err := seedRequest(t, svc, rec); err != nil {
+			t.Fatalf("seed request %s: %v", rec.ID, err)
+		}
+	}
+
+	backends, err := svc.getBackendBreakdown(24, RequestFilter{})
+	if err != nil {
+		t.Fatalf("get backend breakdown: %v", err)
+	}
+
+	if len(backends) != 2 {
+		t.Fatalf("expected 2 backends, got %d", len(backends))
+	}
+
+	for _, be := range backends {
+		switch be["backend_url"] {
+		case "http://backend-a:8080":
+			if be["total_requests"].(int64) != 2 {
+				t.Errorf("backend-a total_requests=%v, want 2", be["total_requests"])
+			}
+			if be["total_tokens"].(int64) != 33 {
+				t.Errorf("backend-a total_tokens=%v, want 33", be["total_tokens"])
+			}
+		case "http://backend-b:8080":
+			if be["total_requests"].(int64) != 1 {
+				t.Errorf("backend-b total_requests=%v, want 1", be["total_requests"])
+			}
+			if be["total_tokens"].(int64) != 20 {
+				t.Errorf("backend-b total_tokens=%v, want 20", be["total_tokens"])
+			}
+		default:
+			t.Errorf("unexpected backend_url: %v", be["backend_url"])
+		}
+	}
+}
+
+func TestRequestFilterByBackend(t *testing.T) {
+	svc, _, db, cleanup := newTestServer(t, "http://backend-a:8080")
+	defer cleanup()
+	defer db.Close()
+
+	now := time.Now().UTC()
+	for _, rec := range []RequestRecord{
+		{
+			ID:          "a1",
+			CreatedAt:   now,
+			Method:      http.MethodPost,
+			Path:        "/v1/chat/completions",
+			BackendURL:  "http://backend-a:8080",
+			StatusCode:  http.StatusOK,
+		},
+		{
+			ID:          "b1",
+			CreatedAt:   now.Add(-time.Minute),
+			Method:      http.MethodPost,
+			Path:        "/v1/chat/completions",
+			BackendURL:  "http://backend-b:8080",
+			StatusCode:  http.StatusOK,
+		},
+	} {
+		if err := seedRequest(t, svc, rec); err != nil {
+			t.Fatalf("seed request %s: %v", rec.ID, err)
+		}
+	}
+
+	items, err := svc.getRequests(20, 0, RequestFilter{Backend: "http://backend-b:8080"})
+	if err != nil {
+		t.Fatalf("get requests: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected 1 item for backend-b, got %d", len(items))
+	}
+	if items[0].ID != "b1" {
+		t.Fatalf("unexpected item id=%q", items[0].ID)
+	}
+
+	items, err = svc.getRequests(20, 0, RequestFilter{})
+	if err != nil {
+		t.Fatalf("get requests: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("expected 2 items without filter, got %d", len(items))
+	}
+}
+
+func TestMultiBackendRouting(t *testing.T) {
+	backendA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"model":"model-a","usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}`)
+	}))
+	defer backendA.Close()
+
+	backendB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"model":"model-b","usage":{"prompt_tokens":4,"completion_tokens":5,"total_tokens":9}}`)
+	}))
+	defer backendB.Close()
+
+	svc, _, db, cleanup := newTestServer(t, backendA.URL)
+	defer cleanup()
+	defer db.Close()
+
+	handlerA := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/_monitor") {
+			svc.handleMonitor(w, r)
+			return
+		}
+		ctx := context.WithValue(r.Context(), backendOverrideKey, backendA.URL)
+		svc.handleProxy(w, r.WithContext(ctx))
+	})
+
+	handlerB := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/_monitor") {
+			svc.handleMonitor(w, r)
+			return
+		}
+		ctx := context.WithValue(r.Context(), backendOverrideKey, backendB.URL)
+		svc.handleProxy(w, r.WithContext(ctx))
+	})
+
+	proxyA := httptest.NewServer(handlerA)
+	defer proxyA.Close()
+	proxyB := httptest.NewServer(handlerB)
+	defer proxyB.Close()
+
+	respA, err := proxyA.Client().Post(proxyA.URL+"/completion", "application/json", strings.NewReader(`{"prompt":"hi"}`))
+	if err != nil {
+		t.Fatalf("proxy A post: %v", err)
+	}
+	defer respA.Body.Close()
+	bodyA, _ := io.ReadAll(respA.Body)
+	if !strings.Contains(string(bodyA), "model-a") {
+		t.Fatalf("expected model-a from backend A, got: %s", string(bodyA))
+	}
+
+	respB, err := proxyB.Client().Post(proxyB.URL+"/completion", "application/json", strings.NewReader(`{"prompt":"hi"}`))
+	if err != nil {
+		t.Fatalf("proxy B post: %v", err)
+	}
+	defer respB.Body.Close()
+	bodyB, _ := io.ReadAll(respB.Body)
+	if !strings.Contains(string(bodyB), "model-b") {
+		t.Fatalf("expected model-b from backend B, got: %s", string(bodyB))
+	}
+
+	listResp, err := proxyA.Client().Get(proxyA.URL + "/_monitor/requests?limit=10")
+	if err != nil {
+		t.Fatalf("get requests: %v", err)
+	}
+	defer listResp.Body.Close()
+	var payload struct {
+		Items []RequestRecord `json:"items"`
+	}
+	if err := json.NewDecoder(listResp.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode requests: %v", err)
+	}
+
+	if len(payload.Items) != 2 {
+		t.Fatalf("expected 2 requests, got %d", len(payload.Items))
+	}
+
+	var backendURLs []string
+	for _, item := range payload.Items {
+		backendURLs = append(backendURLs, item.BackendURL)
+	}
+	if !contains(backendURLs, backendA.URL) {
+		t.Errorf("expected backend A URL in results: %v", backendURLs)
+	}
+	if !contains(backendURLs, backendB.URL) {
+		t.Errorf("expected backend B URL in results: %v", backendURLs)
+	}
+}
+
+func TestMonitorBackendsEndpoint(t *testing.T) {
+	_, handler, _, cleanup := newTestServer(t, "http://backend-a:8080")
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodGet, "/_monitor/backends", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+
+	var result struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&result); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	if len(result.Items) != 1 {
+		t.Fatalf("expected 1 backend, got %d", len(result.Items))
+	}
+	if result.Items[0]["url"] != "http://backend-a:8080" {
+		t.Errorf("unexpected url: %v", result.Items[0]["url"])
+	}
+}
+
+func contains(slice []string, item string) bool {
+	for _, s := range slice {
+		if s == item {
+			return true
+		}
+	}
+	return false
+}
+
+func newTestServer(t *testing.T, backendURL string) (*Server, http.Handler, *sql.DB, func()) {
 	t.Helper()
 
 	dataDir := t.TempDir()
@@ -834,8 +1112,8 @@ func newTestServer(t *testing.T, backendURL string) (*Server, *sql.DB, func()) {
 
 	svc := &Server{
 		cfg: Config{
-			ListenAddr:          ":0",
-			DefaultBackend:      backendURL,
+			MonitorListenAddr:   ":0",
+			Backends:            []BackendConfig{{URL: backendURL, ListenAddr: ":0"}},
 			AllowDynamicBackend: true,
 			DataDir:             dataDir,
 			RetentionDays:       14,
@@ -848,6 +1126,15 @@ func newTestServer(t *testing.T, backendURL string) (*Server, *sql.DB, func()) {
 		hub:    NewEventHub(),
 	}
 
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/_monitor") {
+			svc.handleMonitor(w, r)
+			return
+		}
+		ctx := context.WithValue(r.Context(), backendOverrideKey, backendURL)
+		svc.handleProxy(w, r.WithContext(ctx))
+	})
+
 	cleanup := func() {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
@@ -855,7 +1142,7 @@ func newTestServer(t *testing.T, backendURL string) (*Server, *sql.DB, func()) {
 		_ = os.Remove(filepath.Join(dataDir, "monitor.db-wal"))
 		_ = db.PingContext(ctx)
 	}
-	return svc, db, cleanup
+	return svc, handler, db, cleanup
 }
 
 func seedRequest(t *testing.T, svc *Server, rec RequestRecord) error {
